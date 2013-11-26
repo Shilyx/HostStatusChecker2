@@ -17,6 +17,7 @@ static enum
 {
     WM_CALLBACK = WM_USER + 112,
     WM_REPORT,
+    WM_UPDATETIP,
 };
 
 static enum
@@ -26,21 +27,37 @@ static enum
     MI_QUIT,
 };
 
+static enum IoType
+{
+    IT_NONE,
+    IT_CONNECT,
+    IT_RECV,
+};
+
+static enum CompleteKey
+{
+    CK_NORMAL = 112,
+    CK_QUIT,
+};
+
 struct HostInfo
 {
-    char szHostAddress[64];
-    DWORD dwAddress;
-    USHORT usPort;
-    BOOL bActive;
+    OVERLAPPED  ol;
+    int         index;
+    SOCKET      sock;
+    enum IoType type;
+    WSABUF      buf;
+    char        szHostAddress[64];
+    DWORD       dwAddress;
+    USHORT      usPort;
+    BOOL        bActive;
+    char        buffer[4096];
 };
 
 static struct HostInfo g_hosts[1024];
 static int g_nHostsCount = 0;
+static int g_nActiveCount = 0;
 static HWND g_hMainWnd = NULL;
-
-static char g_szDomainName[64] = "";
-static DWORD g_dwAddress = 0;
-static USHORT g_usPort = 0;
 
 static BOOL InitWinSock(WORD ver)
 {
@@ -147,86 +164,107 @@ BOOL SetSockKeepAlive(
         );
 }
 
+__forceinline BOOL Xor(BOOL b1, BOOL b2)
+{
+    return !!(!!b1 ^ !!b2);
+}
+
+DWORD GetDllVersion(LPCTSTR lpszDllName)
+{
+    HINSTANCE hinstDll = GetModuleHandle(lpszDllName);
+    DWORD dwVersion = 0;
+
+    if (hinstDll == NULL)
+    {
+        hinstDll = LoadLibrary(lpszDllName);
+    }
+
+    if (hinstDll != NULL)
+    {
+        DLLGETVERSIONPROC pDllGetVersion = (DLLGETVERSIONPROC)GetProcAddress(hinstDll, "DllGetVersion");
+
+        if (pDllGetVersion)
+        {
+            DLLVERSIONINFO dvi = {sizeof(dvi)};
+
+            if (SUCCEEDED(pDllGetVersion(&dvi)))
+            {
+                dwVersion = MAKELONG(dvi.dwMajorVersion, dvi.dwMinorVersion);
+            }
+        }
+    }
+
+    return dwVersion;
+}
+
+int GetNotifyIconDataSize()
+{
+    ULONGLONG dwShell32Version = GetDllVersion(TEXT("Shell32.dll"));
+
+    if (dwShell32Version >= MAKEDLLVERULL(6, 0, 0, 0))
+    {
+        return sizeof(NOTIFYICONDATA);
+    }
+    else if(dwShell32Version >= MAKEDLLVERULL(5, 0, 0, 0))
+    {
+        return NOTIFYICONDATA_V2_SIZE;
+    }
+    else
+    {
+        return NOTIFYICONDATA_V1_SIZE;
+    }
+}
+
 static LRESULT __stdcall NotifyWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
-    static NOTIFYICONDATA nid = {sizeof(nid)};
-    static HICON hIco = NULL;
     static UINT WM_REBUILDTOOLBAR = 0;
-    static BOOL bShowInfo = TRUE;
+    static NOTIFYICONDATA s_nid = {sizeof(s_nid)};
+    static BOOL s_bShowInfo = TRUE;
 
-    if (uMsg == WM_CREATE)
+    switch (uMsg)
     {
-        LPCREATESTRUCT lpCs = (LPCREATESTRUCT)lParam;
+    case WM_CREATE:
+        s_nid.cbSize = GetNotifyIconDataSize();
+        s_nid.hWnd = hWnd;
+        s_nid.uID = 1;
+        s_nid.uCallbackMessage = WM_CALLBACK;
+        s_nid.hIcon = LoadIcon(((LPCREATESTRUCT)lParam)->hInstance, MAKEINTRESOURCE(IDI_MAINFRAME));
+        s_nid.uFlags = NIF_TIP | NIF_MESSAGE | NIF_ICON;
+        lstrcpyn(s_nid.szInfoTitle, TEXT("信息"), RTL_NUMBER_OF(s_nid.szInfoTitle));
+        s_nid.uTimeout = 3000;
+        s_nid.dwInfoFlags = NIIF_INFO;
+        SendMessage(hWnd, WM_UPDATETIP, 0, 0);
 
-        hIco = LoadIcon(lpCs->hInstance, MAKEINTRESOURCE(IDI_MAINFRAME));
+        Shell_NotifyIcon(NIM_ADD, &s_nid);
 
         WM_REBUILDTOOLBAR = RegisterWindowMessage(TEXT("TaskbarCreated"));
-
-        //add icon to tray
-        nid.hWnd = hWnd;
-        nid.uID = 1;
-        nid.uCallbackMessage = WM_CALLBACK;
-        nid.hIcon = hIco;
-        nid.uFlags = NIF_TIP | NIF_MESSAGE | NIF_ICON;
-        lstrcpyn(nid.szInfoTitle, TEXT("信息"), sizeof(nid.szTip));
-        nid.uTimeout = 3000;
-        nid.dwInfoFlags = NIIF_INFO;
-
-        Shell_NotifyIcon(NIM_ADD, &nid);
-
-        //
-        PostMessage(hWnd, WM_REPORT, FALSE, FALSE);
-
         return 0;
-    }
-    else if (uMsg == WM_REPORT)
-    {
-        BOOL bActive = (BOOL)wParam;
-        BOOL bShowInfoThisTime = (BOOL)lParam;
 
-        nid.uFlags = NIF_TIP;
+    case WM_CLOSE:
+        Shell_NotifyIcon(NIM_DELETE, &s_nid);
+        DestroyWindow(hWnd);
+        return 0;
+        
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
 
-        wnsprintf(
-            nid.szTip,
-            RTL_NUMBER_OF(nid.szTip),
-            TEXT("域名：%hs\r\n")
-            TEXT("IP地址：%hs\r\n")
-            TEXT("端口：%u\r\n")
-            TEXT("当前状态：%s\r\n"),
-            g_szDomainName,
-            inet_ntoa(*(struct in_addr *)&g_dwAddress),
-            g_usPort,
-            bActive ? TEXT("活动") : TEXT("不活动")
+    case WM_UPDATETIP:
+        return wnsprintf(
+            s_nid.szTip,
+            RTL_NUMBER_OF(s_nid.szTip),
+            TEXT("主机活动情况：%d/%d\r\n")
+            TEXT("点击图标查看详情"),
+            g_nActiveCount,
+            g_nHostsCount
             );
 
-        if (bShowInfoThisTime && bShowInfo)
+    case WM_CALLBACK:
+        if (lParam == WM_LBUTTONUP)
         {
-            wnsprintf(
-                nid.szInfo,
-                RTL_NUMBER_OF(nid.szInfo),
-                TEXT("主机“%hs:%u”已进入%s活动状态。"),
-                lstrlenA(g_szDomainName) > 0 ? g_szDomainName : inet_ntoa(*(struct in_addr *)&g_dwAddress),
-                g_usPort,
-                bActive ? TEXT("") : TEXT("不")
-                );
-
-            nid.uFlags |= NIF_INFO;
+            //显示详细信息
         }
-
-        Shell_NotifyIcon(NIM_MODIFY, &nid);
-    }
-    else if (uMsg == WM_CLOSE)
-    {
-        Shell_NotifyIcon(NIM_DELETE, &nid);
-        DestroyWindow(hWnd);
-    }
-    else if (uMsg == WM_DESTROY)
-    {
-        PostQuitMessage(0);
-    }
-    else if (uMsg == WM_CALLBACK)
-    {
-        if (lParam == WM_RBUTTONUP)
+        else if (lParam == WM_RBUTTONUP)
         {
             POINT pt;
             HMENU hMenu = CreatePopupMenu();
@@ -240,7 +278,7 @@ static LRESULT __stdcall NotifyWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
             AppendMenu(hMenu, MF_STRING, MI_USEINFO, TEXT("启用气泡通知(&B)"));
             AppendMenu(hMenu, MF_STRING, MI_QUIT, TEXT("退出(&Q)"));
 
-            if (bShowInfo)
+            if (s_bShowInfo)
             {
                 CheckMenuItem(hMenu, MI_USEINFO, MF_BYCOMMAND | MF_CHECKED);
             }
@@ -256,7 +294,7 @@ static LRESULT __stdcall NotifyWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
                 break;
 
             case MI_USEINFO:
-                bShowInfo = !bShowInfo;
+                s_bShowInfo = !s_bShowInfo;
                 break;
 
             case MI_QUIT:
@@ -269,10 +307,44 @@ static LRESULT __stdcall NotifyWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
 
             DestroyMenu(hMenu);
         }
-    }
-    else if (uMsg == WM_REBUILDTOOLBAR)
+        return 0;
+
+    case WM_REPORT:
     {
-        Shell_NotifyIcon(NIM_ADD, &nid);
+        UINT uLastFlags = s_nid.uFlags;
+
+        s_nid.uFlags = NIF_TIP;
+        SendMessage(hWnd, WM_UPDATETIP, 0, 0);
+
+        if (s_bShowInfo)
+        {
+            DWORD dwIndex = (DWORD)wParam;
+            BOOL bActive = (BOOL)lParam;
+
+            wnsprintf(
+                s_nid.szInfo,
+                RTL_NUMBER_OF(s_nid.szInfo),
+                TEXT("主机“%hs:%u”已进入%s活动状态。"),
+                g_hosts[dwIndex].szHostAddress,
+                g_hosts[dwIndex].usPort,
+                bActive ? TEXT("") : TEXT("不")
+                );
+
+            s_nid.uFlags |= NIF_INFO;
+        }
+
+        Shell_NotifyIcon(NIM_MODIFY, &s_nid);
+        s_nid.uFlags = uLastFlags;
+
+        return 0;
+    }
+
+    default:
+        if (uMsg == WM_REBUILDTOOLBAR)
+        {
+            Shell_NotifyIcon(NIM_ADD, &s_nid);
+        }
+        break;
     }
 
     return DefWindowProc(hWnd, uMsg, wParam, lParam);
@@ -305,7 +377,7 @@ BOOL GetHostInformation()
             argc -= 1;
         }
 
-        for (; index < (argc - 1) / 2; ++index)
+        for (bSuccess = TRUE; index < (argc - 1) / 2; ++index)
         {
             LPCWSTR lpAddress = argv[index * 2 + 1];
             LPCWSTR lpPort = argv[index * 2 + 2];
@@ -316,6 +388,7 @@ BOOL GetHostInformation()
             if (!IsPortW(lpPort, &usPort))
             {
                 MessageBoxFormat(NULL, NULL, MB_SYSTEMMODAL | MB_ICONERROR, TEXT("“%ls”不是合法的端口号"), lpPort);
+                bSuccess = FALSE;
                 break;
             }
 
@@ -332,6 +405,7 @@ BOOL GetHostInformation()
                 if (pHostEnt == NULL)
                 {
                     MessageBoxFormat(NULL, NULL, MB_SYSTEMMODAL | MB_ICONERROR, TEXT("“%ls”无法正确解析"), argv[1]);
+                    bSuccess = FALSE;
                     break;
                 }
                 else
@@ -385,94 +459,163 @@ DWORD __stdcall SnifferProc(LPVOID lpParam)
 {
     HANDLE hIocp = (HANDLE)lpParam;
     struct sockaddr_in sin = {AF_INET};
-    int nIndex = 0;
     LPFN_CONNECTEX pConnectEx = NULL;
+    int nIndex = 0;
 
     for (; nIndex < g_nHostsCount; nIndex += 1)
     {
+        g_hosts[nIndex].index = nIndex;
+        g_hosts[nIndex].buf.buf = g_hosts[nIndex].buffer;
+        g_hosts[nIndex].buf.len = sizeof(g_hosts[nIndex].buffer);
+        g_hosts[nIndex].sock = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_OVERLAPPED);
+        g_hosts[nIndex].type = IT_CONNECT;
+
+        if (pConnectEx == NULL)
+        {
+            GUID guidConnectEx = WSAID_CONNECTEX;
+            DWORD dwBytesRead = 0;
+
+            WSAIoctl(
+                g_hosts[nIndex].sock,
+                SIO_GET_EXTENSION_FUNCTION_POINTER,
+                &guidConnectEx,
+                sizeof(guidConnectEx),
+                &pConnectEx,
+                sizeof(pConnectEx),
+                &dwBytesRead,
+                NULL,
+                NULL
+                );
+
+            if (pConnectEx == NULL)
+            {
+                return 0;
+            }
+        }
+
         sin.sin_addr.s_addr = g_hosts[nIndex].dwAddress;
         sin.sin_port = htons(g_hosts[nIndex].usPort);
 
+        CreateIoCompletionPort((HANDLE)g_hosts[nIndex].sock, hIocp, CK_NORMAL, 0);
+        g_hosts[nIndex].ol.hEvent = WSACreateEvent();
+        pConnectEx(
+            g_hosts[nIndex].sock,
+            (const struct sockaddr *)&sin,
+            sizeof(sin),
+            NULL,
+            0,
+            NULL,
+            &g_hosts[nIndex].ol
+            );
+    }
 
+    while (TRUE)
+    {
+        DWORD dwBytesTransferred = 0;
+        ULONG_PTR ulCompletionKey = 0;
+        struct HostInfo *pHostInfo = NULL;
+        BOOL bIoSucceed = GetQueuedCompletionStatus(hIocp, &dwBytesTransferred, &ulCompletionKey, (LPOVERLAPPED *)&pHostInfo, INFINITE);
+
+        if (dwBytesTransferred == 0 && ulCompletionKey == CK_QUIT && pHostInfo != NULL)
+        {
+            break;
+        }
+
+        if (pHostInfo == NULL)
+        {
+            Sleep(100);
+            continue;
+        }
+
+        if (ulCompletionKey != CK_NORMAL)
+        {
+            continue;
+        }
+    }
+
+    for (nIndex = 0; nIndex < g_nHostsCount; nIndex += 1)
+    {
+        CancelIo((HANDLE)g_hosts[nIndex].sock);
+        closesocket(g_hosts[nIndex].sock);
     }
 
 
-    //     BOOL bActive = FALSE;
-    //     HWND hMainWindow = (HWND)lpParam;
-    //     struct sockaddr_in sin;
-    // 
-    //     sin.sin_family = AF_INET;
-    //     sin.sin_addr.s_addr = g_dwAddress;
-    //     sin.sin_port = htons(g_usPort);
-    // 
-    //     if (!IsWindow(hMainWindow))
-    //     {
-    //         return 0;
-    //     }
-    //  
-    //     while (TRUE)
-    //     {
-    //         int ret = 0;
-    //         SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    // 
-    //         while (sock == INVALID_SOCKET && IsWindow(hMainWindow))
-    //         {
-    //             Sleep(3000);
-    // 
-    //             sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    //         }
-    // 
-    //         if (!IsWindow(hMainWindow))
-    //         {
-    //             closesocket(sock);
-    //             break;
-    //         }
-    // 
-    //         ret = connect(sock, (const struct sockaddr *)&sin, sizeof(sin));
-    // 
-    //         if (!IsWindow(hMainWindow))
-    //         {
-    //             closesocket(sock);
-    //             break;
-    //         }
-    // 
-    //         if (ret != 0)
-    //         {
-    //             if (bActive)
-    //             {
-    //                 bActive = FALSE;
-    //                 PostMessage(hMainWindow, WM_REPORT, bActive, TRUE);
-    //             }
-    // 
-    //             Sleep(3000);
-    //         }
-    //         else
-    //         {
-    //             if (!bActive)
-    //             {
-    //                 bActive = TRUE;
-    //                 PostMessage(hMainWindow, WM_REPORT, bActive, TRUE);
-    //             }
-    // 
-    //             SetSockKeepAlive(sock, 1, 3000, 5000);
-    // 
-    //             while (IsWindow(hMainWindow))
-    //             {
-    //                 char szBuffer[4096];
-    // 
-    //                 ret = recv(sock, szBuffer, sizeof(szBuffer), 0);
-    // 
-    //                 if (ret <= 0)
-    //                 {
-    //                     break;
-    //                 }
-    //             }
-    //         }
-    // 
-    //         closesocket(sock);
-    //     }
-    // 
-    //     return 0;
+//     BOOL bActive = FALSE;
+//     HWND hMainWindow = (HWND)lpParam;
+//     struct sockaddr_in sin;
+// 
+//     sin.sin_family = AF_INET;
+//     sin.sin_addr.s_addr = g_dwAddress;
+//     sin.sin_port = htons(g_usPort);
+// 
+//     if (!IsWindow(hMainWindow))
+//     {
+//         return 0;
+//     }
+//  
+//     while (TRUE)
+//     {
+//         int ret = 0;
+//         SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+// 
+//         while (sock == INVALID_SOCKET && IsWindow(hMainWindow))
+//         {
+//             Sleep(3000);
+// 
+//             sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+//         }
+// 
+//         if (!IsWindow(hMainWindow))
+//         {
+//             closesocket(sock);
+//             break;
+//         }
+// 
+//         ret = connect(sock, (const struct sockaddr *)&sin, sizeof(sin));
+// 
+//         if (!IsWindow(hMainWindow))
+//         {
+//             closesocket(sock);
+//             break;
+//         }
+// 
+//         if (ret != 0)
+//         {
+//             if (bActive)
+//             {
+//                 bActive = FALSE;
+//                 PostMessage(hMainWindow, WM_REPORT, bActive, TRUE);
+//             }
+// 
+//             Sleep(3000);
+//         }
+//         else
+//         {
+//             if (!bActive)
+//             {
+//                 bActive = TRUE;
+//                 PostMessage(hMainWindow, WM_REPORT, bActive, TRUE);
+//             }
+// 
+//             SetSockKeepAlive(sock, 1, 3000, 5000);
+// 
+//             while (IsWindow(hMainWindow))
+//             {
+//                 char szBuffer[4096];
+// 
+//                 ret = recv(sock, szBuffer, sizeof(szBuffer), 0);
+// 
+//                 if (ret <= 0)
+//                 {
+//                     break;
+//                 }
+//             }
+//         }
+// 
+//         closesocket(sock);
+//     }
+// 
+//     return 0;
 }
 
 int APIENTRY _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdLine, int nShowCmd)
@@ -534,7 +677,7 @@ int APIENTRY _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCm
         DispatchMessage(&msg);
     }
 
-    PostQueuedCompletionStatus(hIocp, 0, 0, NULL);
+    PostQueuedCompletionStatus(hIocp, 0, CK_QUIT, NULL);
 
     WaitForSingleObject(hSnifferThread, 3134);
     TerminateThread(hSnifferThread, 0);
