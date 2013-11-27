@@ -237,11 +237,13 @@ static LRESULT __stdcall NotifyWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
     switch (uMsg)
     {
     case WM_CREATE:
+        s_hInstance = ((LPCREATESTRUCT)lParam)->hInstance;
+
         s_nid.cbSize = GetNotifyIconDataSize();
         s_nid.hWnd = hWnd;
         s_nid.uID = 1;
         s_nid.uCallbackMessage = WM_CALLBACK;
-        s_nid.hIcon = LoadIcon(((LPCREATESTRUCT)lParam)->hInstance, MAKEINTRESOURCE(IDI_MAINFRAME));
+        s_nid.hIcon = LoadIcon(s_hInstance, MAKEINTRESOURCE(IDI_MAINFRAME));
         s_nid.uFlags = NIF_TIP | NIF_MESSAGE | NIF_ICON;
         lstrcpyn(s_nid.szInfoTitle, TEXT("信息"), RTL_NUMBER_OF(s_nid.szInfoTitle));
         s_nid.uTimeout = 3000;
@@ -310,7 +312,28 @@ static LRESULT __stdcall NotifyWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
     case WM_CALLBACK:
         if (lParam == WM_LBUTTONUP)
         {
+            TCHAR szText[RTL_NUMBER_OF(g_hosts) * (sizeof(g_hosts->szHostAddress) + 100)] = TEXT("");
+            int i;
             POINT pt;
+
+            for (i = 0; i < g_nHostsCount; i += 1)
+            {
+                int nLength = lstrlen(szText);
+
+                if (szText[0] != TEXT('\0'))
+                {
+                    StrCatBuff(szText, TEXT("\r\n"), RTL_NUMBER_OF(szText));
+                    nLength += 2;
+                }
+
+                wnsprintf(
+                    szText + nLength,
+                    RTL_NUMBER_OF(szText) - nLength,
+                    TEXT("%hs当前处于%s活动状态"),
+                    g_hosts[i].szHostAddress,
+                    g_hosts[i].bActive ? TEXT("") : TEXT("不")
+                    );
+            }
 
             if (!IsWindow(s_hToolTip))
             {
@@ -337,7 +360,7 @@ static LRESULT __stdcall NotifyWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
                 SendMessage(s_hToolTip, TTM_ADDTOOL, 0, (LPARAM)&s_ti);
             }
 
-            s_ti.lpszText = TEXT("sssssssss");
+            s_ti.lpszText = szText;
             SendMessage(s_hToolTip, TTM_UPDATETIPTEXT, 0, &s_ti);
 
             GetCursorPos(&pt);
