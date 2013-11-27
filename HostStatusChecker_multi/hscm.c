@@ -5,11 +5,13 @@
 #include <MSWSock.h>
 #include <Windows.h>
 #include <Shlwapi.h>
+#include <CommCtrl.h>
 #include <tchar.h>
 #include "resource.h"
 
 #pragma comment(lib, "Ws2_32.lib")
 #pragma comment(lib, "Shlwapi.lib")
+#pragma comment(lib, "ComCtl32.lib")
 
 #define NOTIFYWNDCLASS TEXT("__slx_HostStatusChecker_multi_20131121")
 
@@ -23,6 +25,7 @@ static enum
 static enum
 {
     MI_ABOUT = 11,
+    MI_DETAIL,
     MI_USEINFO,
     MI_QUIT,
 };
@@ -45,13 +48,18 @@ struct HostInfo
     OVERLAPPED  ol;
     int         index;
     SOCKET      sock;
+    DWORD       dwFlag;
     enum IoType type;
     WSABUF      buf;
     char        szHostAddress[64];
     DWORD       dwAddress;
     USHORT      usPort;
     BOOL        bActive;
+#ifdef _DEBUG
+    char        buffer[16];
+#else
     char        buffer[4096];
+#endif
 };
 
 static struct HostInfo g_hosts[1024];
@@ -169,10 +177,10 @@ __forceinline BOOL Xor(BOOL b1, BOOL b2)
     return !!(!!b1 ^ !!b2);
 }
 
-DWORD GetDllVersion(LPCTSTR lpszDllName)
+ULONGLONG GetDllVersion(LPCTSTR lpszDllName)
 {
     HINSTANCE hinstDll = GetModuleHandle(lpszDllName);
-    DWORD dwVersion = 0;
+    ULONGLONG ullVersion = 0;
 
     if (hinstDll == NULL)
     {
@@ -189,23 +197,23 @@ DWORD GetDllVersion(LPCTSTR lpszDllName)
 
             if (SUCCEEDED(pDllGetVersion(&dvi)))
             {
-                dwVersion = MAKELONG(dvi.dwMajorVersion, dvi.dwMinorVersion);
+                ullVersion = MAKEDLLVERULL(dvi.dwMajorVersion, dvi.dwMinorVersion, dvi.dwBuildNumber, 0);
             }
         }
     }
 
-    return dwVersion;
+    return ullVersion;
 }
 
 int GetNotifyIconDataSize()
 {
-    ULONGLONG dwShell32Version = GetDllVersion(TEXT("Shell32.dll"));
+    ULONGLONG ullShell32Version = GetDllVersion(TEXT("Shell32.dll"));
 
-    if (dwShell32Version >= MAKEDLLVERULL(6, 0, 0, 0))
+    if (ullShell32Version >= MAKEDLLVERULL(6, 0, 0, 0))
     {
         return sizeof(NOTIFYICONDATA);
     }
-    else if(dwShell32Version >= MAKEDLLVERULL(5, 0, 0, 0))
+    else if(ullShell32Version >= MAKEDLLVERULL(5, 0, 0, 0))
     {
         return NOTIFYICONDATA_V2_SIZE;
     }
@@ -218,8 +226,13 @@ int GetNotifyIconDataSize()
 static LRESULT __stdcall NotifyWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
     static UINT WM_REBUILDTOOLBAR = 0;
+    static HINSTANCE s_hInstance;
     static NOTIFYICONDATA s_nid = {sizeof(s_nid)};
     static BOOL s_bShowInfo = TRUE;
+    static HANDLE s_hIocp = NULL;
+    static int s_nTicks[RTL_NUMBER_OF(g_hosts)] = {0};
+    static HWND s_hToolTip = NULL;
+    static TOOLINFO s_ti = {sizeof(s_ti)};
 
     switch (uMsg)
     {
@@ -238,6 +251,7 @@ static LRESULT __stdcall NotifyWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
         Shell_NotifyIcon(NIM_ADD, &s_nid);
 
         WM_REBUILDTOOLBAR = RegisterWindowMessage(TEXT("TaskbarCreated"));
+        s_hIocp = (HANDLE)((LPCREATESTRUCT)lParam)->lpCreateParams;
         return 0;
 
     case WM_CLOSE:
@@ -247,6 +261,22 @@ static LRESULT __stdcall NotifyWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
         
     case WM_DESTROY:
         PostQuitMessage(0);
+        return 0;
+
+    case WM_TIMER:
+        if (wParam >= 0 && wParam <= RTL_NUMBER_OF(s_nTicks))
+        {
+            s_nTicks[wParam] -= 1;
+            if (s_nTicks[wParam] == 0)
+            {
+                KillTimer(hWnd, wParam);
+                PostQueuedCompletionStatus(s_hIocp, 0, CK_NORMAL, (LPOVERLAPPED)&g_hosts[wParam]);
+            }
+            else if (s_nTicks[wParam] < 0)
+            {
+                s_nTicks[wParam] = 10;
+            }
+        }
         return 0;
 
     case WM_UPDATETIP:
@@ -259,12 +289,64 @@ static LRESULT __stdcall NotifyWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
             g_nHostsCount
             );
 
+    case WM_ACTIVATE:
+        if (!(BOOL)wParam)
+        {
+            SendMessage(hWnd, WM_MOUSEMOVE, 0, 0);
+        }
+        break;
+
+    case WM_LBUTTONDOWN:
+    case WM_MBUTTONDOWN:
+    case WM_RBUTTONDOWN:
+    case WM_MOUSEMOVE:
+    case WM_MOUSEWHEEL:
+        if (IsWindow(s_hToolTip))
+        {
+            SendMessage(s_hToolTip, TTM_TRACKACTIVATE, FALSE, &s_ti);
+        }
+        break;
+
     case WM_CALLBACK:
         if (lParam == WM_LBUTTONUP)
         {
-            //显示详细信息
+            POINT pt;
+
+            if (!IsWindow(s_hToolTip))
+            {
+                s_ti.uFlags = 0;
+                s_ti.hwnd = hWnd;
+                s_ti.hinst = s_hInstance;
+                s_ti.uId = 1;
+                s_ti.uFlags = TTF_TRANSPARENT;
+
+                s_hToolTip = CreateWindowEx(
+                    WS_EX_TOPMOST,
+                    TOOLTIPS_CLASS,
+                    NULL,
+                    WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
+                    0,
+                    0,
+                    0,
+                    0,
+                    hWnd,
+                    NULL,
+                    s_hInstance,
+                    NULL
+                    );
+                SendMessage(s_hToolTip, TTM_ADDTOOL, 0, (LPARAM)&s_ti);
+            }
+
+            s_ti.lpszText = TEXT("sssssssss");
+            SendMessage(s_hToolTip, TTM_UPDATETIPTEXT, 0, &s_ti);
+
+            GetCursorPos(&pt);
+            SendMessage(s_hToolTip, TTM_TRACKPOSITION, 0, MAKELONG(pt.x, pt.y));
+
+            SetForegroundWindow(hWnd);
+            SendMessage(s_hToolTip, TTM_TRACKACTIVATE, TRUE, &s_ti);
         }
-        else if (lParam == WM_RBUTTONUP)
+        else if (lParam == WM_RBUTTONUP || lParam == WM_CONTEXTMENU)
         {
             POINT pt;
             HMENU hMenu = CreatePopupMenu();
@@ -275,8 +357,10 @@ static LRESULT __stdcall NotifyWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
 
             AppendMenu(hMenu, MF_STRING, MI_ABOUT, TEXT("关于(&A)..."));
             AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+            AppendMenu(hMenu, MF_STRING, MI_DETAIL, TEXT("详细信息(&D)..."));
             AppendMenu(hMenu, MF_STRING, MI_USEINFO, TEXT("启用气泡通知(&B)"));
             AppendMenu(hMenu, MF_STRING, MI_QUIT, TEXT("退出(&Q)"));
+            SetMenuDefaultItem(hMenu, MI_DETAIL, MF_BYCOMMAND);
 
             if (s_bShowInfo)
             {
@@ -291,6 +375,10 @@ static LRESULT __stdcall NotifyWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
             {
             case MI_ABOUT:
                 MessageBox(hWnd, TEXT("HostStatusChecker_single application"), TEXT("信息"), MB_SYSTEMMODAL | MB_ICONINFORMATION);
+                break;
+
+            case MI_DETAIL:
+                SendMessage(hWnd, WM_CALLBACK, WM_LBUTTONUP, 0);
                 break;
 
             case MI_USEINFO:
@@ -324,9 +412,8 @@ static LRESULT __stdcall NotifyWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
             wnsprintf(
                 s_nid.szInfo,
                 RTL_NUMBER_OF(s_nid.szInfo),
-                TEXT("主机“%hs:%u”已进入%s活动状态。"),
+                TEXT("主机“%hs”已进入%s活动状态。"),
                 g_hosts[dwIndex].szHostAddress,
-                g_hosts[dwIndex].usPort,
                 bActive ? TEXT("") : TEXT("不")
                 );
 
@@ -455,20 +542,61 @@ BOOL GetHostInformation()
     return bSuccess;
 }
 
+BOOL DoConnectEx(LPFN_CONNECTEX pConnectEx, struct HostInfo *pHostInfo)
+{
+    struct sockaddr_in sin;
+
+    ZeroMemory(&pHostInfo->ol, sizeof(pHostInfo->ol));
+    pHostInfo->type = IT_CONNECT;
+
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = pHostInfo->dwAddress;
+    sin.sin_port = htons(pHostInfo->usPort);
+
+    return pConnectEx(
+        pHostInfo->sock,
+        (const struct sockaddr *)&sin,
+        sizeof(sin),
+        NULL,
+        0,
+        NULL,
+        &pHostInfo->ol
+        );
+}
+
+BOOL DoRecv(struct HostInfo *pHostInfo)
+{
+    ZeroMemory(&pHostInfo->ol, sizeof(pHostInfo->ol));
+    pHostInfo->buf.buf = pHostInfo->buffer;
+    pHostInfo->buf.len = sizeof(pHostInfo->buffer);
+    pHostInfo->dwFlag = 0;
+    pHostInfo->type = IT_RECV;
+
+    return WSARecv(
+        pHostInfo->sock,
+        &pHostInfo->buf,
+        1,
+        NULL,
+        &pHostInfo->dwFlag,
+        &pHostInfo->ol,
+        NULL
+        );
+}
+
 DWORD __stdcall SnifferProc(LPVOID lpParam)
 {
+    struct sockaddr_in sin_zero = {AF_INET};
     HANDLE hIocp = (HANDLE)lpParam;
-    struct sockaddr_in sin = {AF_INET};
     LPFN_CONNECTEX pConnectEx = NULL;
     int nIndex = 0;
 
     for (; nIndex < g_nHostsCount; nIndex += 1)
     {
         g_hosts[nIndex].index = nIndex;
-        g_hosts[nIndex].buf.buf = g_hosts[nIndex].buffer;
-        g_hosts[nIndex].buf.len = sizeof(g_hosts[nIndex].buffer);
+
         g_hosts[nIndex].sock = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_OVERLAPPED);
-        g_hosts[nIndex].type = IT_CONNECT;
+        bind(g_hosts[nIndex].sock, (const struct sockaddr *)&sin_zero, sizeof(sin_zero));
+        CreateIoCompletionPort((HANDLE)g_hosts[nIndex].sock, hIocp, CK_NORMAL, 0);
 
         if (pConnectEx == NULL)
         {
@@ -493,20 +621,7 @@ DWORD __stdcall SnifferProc(LPVOID lpParam)
             }
         }
 
-        sin.sin_addr.s_addr = g_hosts[nIndex].dwAddress;
-        sin.sin_port = htons(g_hosts[nIndex].usPort);
-
-        CreateIoCompletionPort((HANDLE)g_hosts[nIndex].sock, hIocp, CK_NORMAL, 0);
-        g_hosts[nIndex].ol.hEvent = WSACreateEvent();
-        pConnectEx(
-            g_hosts[nIndex].sock,
-            (const struct sockaddr *)&sin,
-            sizeof(sin),
-            NULL,
-            0,
-            NULL,
-            &g_hosts[nIndex].ol
-            );
+        DoConnectEx(pConnectEx, &g_hosts[nIndex]);
     }
 
     while (TRUE)
@@ -516,7 +631,12 @@ DWORD __stdcall SnifferProc(LPVOID lpParam)
         struct HostInfo *pHostInfo = NULL;
         BOOL bIoSucceed = GetQueuedCompletionStatus(hIocp, &dwBytesTransferred, &ulCompletionKey, (LPOVERLAPPED *)&pHostInfo, INFINITE);
 
-        if (dwBytesTransferred == 0 && ulCompletionKey == CK_QUIT && pHostInfo != NULL)
+        if (ulCompletionKey == CK_QUIT/* && dwBytesTransferred == 0 && pHostInfo != NULL*/)
+        {
+            break;
+        }
+
+        if (!IsWindow(g_hMainWnd))
         {
             break;
         }
@@ -531,6 +651,66 @@ DWORD __stdcall SnifferProc(LPVOID lpParam)
         {
             continue;
         }
+
+        if (pHostInfo->type == IT_CONNECT)
+        {
+            if (Xor(bIoSucceed, pHostInfo->bActive))
+            {
+                if (bIoSucceed)
+                {
+                    g_nActiveCount += 1;
+                }
+                else
+                {
+                    g_nActiveCount -= 1;
+                }
+
+                pHostInfo->bActive = bIoSucceed;
+                PostMessage(g_hMainWnd, WM_REPORT, pHostInfo->index, bIoSucceed);
+            }
+
+            if (bIoSucceed)
+            {
+                setsockopt(pHostInfo->sock, SOL_SOCKET, SO_UPDATE_CONNECT_CONTEXT, NULL, 0);
+                SetSockKeepAlive(pHostInfo->sock, 1, 500, 2000);
+
+                DoRecv(pHostInfo);
+            }
+            else
+            {
+                closesocket(pHostInfo->sock);
+                pHostInfo->sock = INVALID_SOCKET;
+
+                pHostInfo->type = IT_RECV;
+
+                KillTimer(g_hMainWnd, pHostInfo->index);
+                SetTimer(g_hMainWnd, pHostInfo->index, 1000, NULL);
+            }
+        }
+        else if (pHostInfo->type == IT_RECV)
+        {
+            if (dwBytesTransferred == 0)
+            {
+                if (pHostInfo->sock != INVALID_SOCKET)
+                {
+                    closesocket(pHostInfo->sock);
+                }
+
+                pHostInfo->sock = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_OVERLAPPED);
+                bind(pHostInfo->sock, (const struct sockaddr *)&sin_zero, sizeof(sin_zero));
+                CreateIoCompletionPort((HANDLE)pHostInfo->sock, hIocp, CK_NORMAL, 0);
+
+                DoConnectEx(pConnectEx, pHostInfo);
+            }
+            else
+            {
+                DoRecv(pHostInfo);
+            }
+        }
+        else
+        {
+            // ...
+        }
     }
 
     for (nIndex = 0; nIndex < g_nHostsCount; nIndex += 1)
@@ -539,83 +719,7 @@ DWORD __stdcall SnifferProc(LPVOID lpParam)
         closesocket(g_hosts[nIndex].sock);
     }
 
-
-//     BOOL bActive = FALSE;
-//     HWND hMainWindow = (HWND)lpParam;
-//     struct sockaddr_in sin;
-// 
-//     sin.sin_family = AF_INET;
-//     sin.sin_addr.s_addr = g_dwAddress;
-//     sin.sin_port = htons(g_usPort);
-// 
-//     if (!IsWindow(hMainWindow))
-//     {
-//         return 0;
-//     }
-//  
-//     while (TRUE)
-//     {
-//         int ret = 0;
-//         SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-// 
-//         while (sock == INVALID_SOCKET && IsWindow(hMainWindow))
-//         {
-//             Sleep(3000);
-// 
-//             sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-//         }
-// 
-//         if (!IsWindow(hMainWindow))
-//         {
-//             closesocket(sock);
-//             break;
-//         }
-// 
-//         ret = connect(sock, (const struct sockaddr *)&sin, sizeof(sin));
-// 
-//         if (!IsWindow(hMainWindow))
-//         {
-//             closesocket(sock);
-//             break;
-//         }
-// 
-//         if (ret != 0)
-//         {
-//             if (bActive)
-//             {
-//                 bActive = FALSE;
-//                 PostMessage(hMainWindow, WM_REPORT, bActive, TRUE);
-//             }
-// 
-//             Sleep(3000);
-//         }
-//         else
-//         {
-//             if (!bActive)
-//             {
-//                 bActive = TRUE;
-//                 PostMessage(hMainWindow, WM_REPORT, bActive, TRUE);
-//             }
-// 
-//             SetSockKeepAlive(sock, 1, 3000, 5000);
-// 
-//             while (IsWindow(hMainWindow))
-//             {
-//                 char szBuffer[4096];
-// 
-//                 ret = recv(sock, szBuffer, sizeof(szBuffer), 0);
-// 
-//                 if (ret <= 0)
-//                 {
-//                     break;
-//                 }
-//             }
-//         }
-// 
-//         closesocket(sock);
-//     }
-// 
-//     return 0;
+    return 0;
 }
 
 int APIENTRY _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdLine, int nShowCmd)
@@ -623,6 +727,8 @@ int APIENTRY _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCm
     HANDLE hIocp = NULL;
     HANDLE hSnifferThread = NULL;
     WNDCLASSEX wcex = {sizeof(wcex)};
+
+    InitCommonControls();
 
     if (!InitWinSock(MAKEWORD(2, 2)))
     {
@@ -634,6 +740,8 @@ int APIENTRY _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCm
     {
         return 0;
     }
+
+    hIocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 0);
 
     wcex.lpfnWndProc = NotifyWndProc;
     wcex.lpszClassName = NOTIFYWNDCLASS;
@@ -654,13 +762,12 @@ int APIENTRY _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCm
         NULL,
         NULL,
         hInstance,
-        NULL
+        (LPVOID)hIocp
         );
 
-    ShowWindow(g_hMainWnd, SW_SHOW);
-    UpdateWindow(g_hMainWnd);
+//     ShowWindow(g_hMainWnd, SW_SHOW);
+//     UpdateWindow(g_hMainWnd);
 
-    hIocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 0);
     hSnifferThread = CreateThread(NULL, 0, SnifferProc, (LPVOID)hIocp, 0, NULL);
 
     while (TRUE)
@@ -688,16 +795,4 @@ int APIENTRY _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCm
     return 0;
 }
 
-#if _MSC_VER <= 1200
-#ifndef _DEBUG
-
-#pragma comment(linker, "/Entry:s")
-#pragma comment(linker, "/Opt:nowin98")
-
-void s()
-{
-    ExitProcess(_tWinMain(GetModuleHandle(NULL), NULL, NULL, SW_SHOW));
-}
-
-#endif
-#endif
+#pragma comment(linker, "\"/manifestdependency:type='Win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
