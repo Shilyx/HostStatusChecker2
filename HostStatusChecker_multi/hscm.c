@@ -305,16 +305,20 @@ static LRESULT __stdcall NotifyWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
     case WM_MOUSEWHEEL:
         if (IsWindow(s_hToolTip))
         {
-            SendMessage(s_hToolTip, TTM_TRACKACTIVATE, FALSE, &s_ti);
+            SendMessage(s_hToolTip, TTM_TRACKACTIVATE, FALSE, (LPARAM)&s_ti);
         }
         break;
 
     case WM_CALLBACK:
         if (lParam == WM_LBUTTONUP)
         {
-            TCHAR szText[RTL_NUMBER_OF(g_hosts) * (sizeof(g_hosts->szHostAddress) + 100)] = TEXT("");
+            static TCHAR szText[RTL_NUMBER_OF(g_hosts) * (sizeof(g_hosts->szHostAddress) + 100)] = TEXT("");
+
             int i;
             POINT pt;
+            RECT rect;
+
+            szText[0] = TEXT('\0');
 
             for (i = 0; i < g_nHostsCount; i += 1)
             {
@@ -341,7 +345,7 @@ static LRESULT __stdcall NotifyWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
                 s_ti.hwnd = hWnd;
                 s_ti.hinst = s_hInstance;
                 s_ti.uId = 1;
-                s_ti.uFlags = TTF_TRANSPARENT;
+                s_ti.uFlags = TTF_TRANSPARENT | TTF_ABSOLUTE | TTF_TRACK;
 
                 s_hToolTip = CreateWindowEx(
                     WS_EX_TOPMOST,
@@ -357,17 +361,34 @@ static LRESULT __stdcall NotifyWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
                     s_hInstance,
                     NULL
                     );
+                SendMessage(s_hToolTip, TTM_SETMAXTIPWIDTH, 0, MAXINT_PTR);
                 SendMessage(s_hToolTip, TTM_ADDTOOL, 0, (LPARAM)&s_ti);
             }
 
             s_ti.lpszText = szText;
-            SendMessage(s_hToolTip, TTM_UPDATETIPTEXT, 0, &s_ti);
+            SendMessage(s_hToolTip, TTM_UPDATETIPTEXT, 0, (LPARAM)&s_ti);
 
+            GetWindowRect(s_hToolTip, &rect);
             GetCursorPos(&pt);
-            SendMessage(s_hToolTip, TTM_TRACKPOSITION, 0, MAKELONG(pt.x, pt.y));
+
+            pt.x = min(pt.x, GetSystemMetrics(SM_CXSCREEN) - rect.right + rect.left);
+            SendMessage(s_hToolTip, TTM_TRACKPOSITION, 0, MAKELONG(pt.x, pt.y - rect.bottom + rect.top));
 
             SetForegroundWindow(hWnd);
-            SendMessage(s_hToolTip, TTM_TRACKACTIVATE, TRUE, &s_ti);
+            SendMessage(s_hToolTip, TTM_TRACKACTIVATE, TRUE, (LPARAM)&s_ti);
+
+            if (rect.left == 0 && rect.right == 0 && rect.top == 0 && rect.bottom == 0)
+            {
+                GetWindowRect(s_hToolTip, &rect);
+                GetCursorPos(&pt);
+
+                SafeDebugMessage(TEXT("%d,%d,%d,%d,%d,%d\n"), rect.left, rect.right, rect.top, rect.bottom, pt.x, pt.y);
+
+                pt.x = min(pt.x, GetSystemMetrics(SM_CXSCREEN) - rect.right + rect.left);
+                pt.y = pt.y - rect.bottom + rect.top;
+
+                SetWindowPos(s_hToolTip, NULL, pt.x, pt.y, 0, 0, SWP_NOZORDER | SWP_NOSIZE);
+            }
         }
         else if (lParam == WM_RBUTTONUP || lParam == WM_CONTEXTMENU)
         {
@@ -401,7 +422,7 @@ static LRESULT __stdcall NotifyWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
                 break;
 
             case MI_DETAIL:
-                SendMessage(hWnd, WM_CALLBACK, WM_LBUTTONUP, 0);
+                SendMessage(hWnd, WM_CALLBACK, 0, WM_LBUTTONUP);
                 break;
 
             case MI_USEINFO:
