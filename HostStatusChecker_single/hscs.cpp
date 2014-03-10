@@ -22,6 +22,7 @@ static enum
 {
     MI_ABOUT = 11,
     MI_USEINFO,
+    MI_RESTART,
     MI_QUIT,
 };
 
@@ -134,6 +135,23 @@ BOOL SetSockKeepAlive(
         );
 }
 
+static void RunSelf()
+{
+    TCHAR szImagePath[MAX_PATH];
+    TCHAR szCmdLine[MAX_PATH + 4096];
+    STARTUPINFO si = {sizeof(si)};
+    PROCESS_INFORMATION pi;
+
+    GetModuleFileName(GetModuleHandle(NULL), szImagePath, RTL_NUMBER_OF(szImagePath));
+    wnsprintf(szCmdLine, RTL_NUMBER_OF(szCmdLine), TEXT("\"%s\" %hs %u"), szImagePath, g_szDomainName, g_usPort);
+
+    if (CreateProcess(NULL, szCmdLine, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi))
+    {
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+    }
+}
+
 static LRESULT __stdcall NotifyWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
     static NOTIFYICONDATA nid = {sizeof(nid)};
@@ -237,6 +255,7 @@ static LRESULT __stdcall NotifyWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
             AppendMenu(hMenu, MF_STRING, MI_ABOUT, TEXT("关于(&A)..."));
             AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
             AppendMenu(hMenu, MF_STRING, MI_USEINFO, TEXT("启用气泡通知(&B)"));
+            AppendMenu(hMenu, MF_STRING, MI_RESTART, TEXT("重新启动(&R)"));
             AppendMenu(hMenu, MF_STRING, MI_QUIT, TEXT("退出(&Q)"));
 
             if (bShowInfo)
@@ -257,6 +276,9 @@ static LRESULT __stdcall NotifyWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
             case MI_USEINFO:
                 bShowInfo = !bShowInfo;
                 break;
+
+            case MI_RESTART:
+                RunSelf();
 
             case MI_QUIT:
                 PostMessage(hWnd, WM_CLOSE, 0, 0);
