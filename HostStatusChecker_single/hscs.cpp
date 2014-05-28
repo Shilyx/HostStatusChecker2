@@ -190,8 +190,9 @@ static LRESULT __stdcall NotifyWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
     {
         BOOL bActive = (BOOL)wParam;
         BOOL bShowInfoThisTime = (BOOL)lParam;
+        UINT uOldFlags = nid.uFlags;
 
-        nid.uFlags = NIF_ICON | NIF_TIP;
+        nid.uFlags |= (NIF_ICON | NIF_TIP);
 
         wnsprintf(
             nid.szTip,
@@ -230,6 +231,7 @@ static LRESULT __stdcall NotifyWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
         }
 
         Shell_NotifyIcon(NIM_MODIFY, &nid);
+        nid.uFlags = uOldFlags;
     }
     else if (uMsg == WM_CLOSE)
     {
