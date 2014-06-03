@@ -366,8 +366,13 @@ static LRESULT __stdcall NotifyWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
     return DefWindowProc(hWnd, uMsg, wParam, lParam);
 }
 
-BOOL GetHostInformation()
+BOOL GetHostInformation(BOOL *pbResolveError = NULL)
 {
+    if (pbResolveError != NULL)
+    {
+        *pbResolveError = FALSE;
+    }
+
     BOOL bSuccess = FALSE;
     int argc = 0;
     LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
@@ -399,7 +404,10 @@ BOOL GetHostInformation()
 
                 if (pHostEnt == NULL)
                 {
-                    MessageBoxFormat(NULL, NULL, MB_SYSTEMMODAL | MB_ICONERROR, TEXT("“%ls”无法正确解析"), argv[1]);
+                    if (pbResolveError != NULL)
+                    {
+                        *pbResolveError = TRUE;
+                    }
                 }
                 else
                 {
@@ -506,9 +514,21 @@ int APIENTRY _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCm
         return 0;
     }
 
-    if (!GetHostInformation())
+    while (TRUE)
     {
-        return 0;
+        BOOL bResolveError = FALSE;
+
+        if (GetHostInformation(&bResolveError))
+        {
+            break;
+        }
+        else
+        {
+            if (!bResolveError || IDRETRY != MessageBoxFormat(NULL, NULL, MB_SYSTEMMODAL | MB_ICONERROR | MB_RETRYCANCEL, TEXT("无法正确解析命令行中的域名（“%s”）"), lpCmdLine))
+            {
+                return 0;
+            }
+        }
     }
 
     WNDCLASSEX wcex = {sizeof(wcex)};
