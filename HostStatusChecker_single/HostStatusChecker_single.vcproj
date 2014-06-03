@@ -89,6 +89,7 @@
 			/>
 			<Tool
 				Name="VCManifestTool"
+				AdditionalManifestFiles="res\app.manifest"
 			/>
 			<Tool
 				Name="VCXDCMakeTool"
@@ -184,6 +185,7 @@
 			/>
 			<Tool
 				Name="VCManifestTool"
+				AdditionalManifestFiles="res\app.manifest"
 			/>
 			<Tool
 				Name="VCXDCMakeTool"
