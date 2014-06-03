@@ -1,4 +1,4 @@
-// Microsoft Visual C++ generated resource script.
+//Microsoft Developer Studio generated resource script.
 //
 #include "resource.h"
 
@@ -13,11 +13,13 @@
 #undef APSTUDIO_READONLY_SYMBOLS
 
 /////////////////////////////////////////////////////////////////////////////
-// 中文(简体，中国) resources
+// Chinese (P.R.C.) resources
 
 #if !defined(AFX_RESOURCE_DLL) || defined(AFX_TARG_CHS)
+#ifdef _WIN32
 LANGUAGE LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED
 #pragma code_page(936)
+#endif //_WIN32
 
 #ifdef APSTUDIO_INVOKED
 /////////////////////////////////////////////////////////////////////////////
@@ -25,18 +27,18 @@ LANGUAGE LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED
 // TEXTINCLUDE
 //
 
-1 TEXTINCLUDE 
+1 TEXTINCLUDE MOVEABLE PURE 
 BEGIN
     "resource.h\0"
 END
 
-2 TEXTINCLUDE 
+2 TEXTINCLUDE MOVEABLE PURE 
 BEGIN
     "#include ""afxres.h""\r\n"
     "\0"
 END
 
-3 TEXTINCLUDE 
+3 TEXTINCLUDE MOVEABLE PURE 
 BEGIN
     "\r\n"
     "\0"
@@ -45,6 +47,7 @@ END
 #endif    // APSTUDIO_INVOKED
 
 
+#ifndef _MAC
 /////////////////////////////////////////////////////////////////////////////
 //
 // Version
@@ -67,14 +70,14 @@ BEGIN
     BEGIN
         BLOCK "080404b0"
         BEGIN
-            VALUE "CompanyName", "Shilyx Studio"
-            VALUE "FileDescription", "HostStatusChecker_single"
-            VALUE "FileVersion", "1, 0, 0, 1"
-            VALUE "InternalName", "HostStatusChecker_single.exe"
-            VALUE "LegalCopyright", "Shilyx Studio 2013"
-            VALUE "OriginalFilename", "HostStatusChecker_single.exe"
-            VALUE "ProductName", "HostStatusChecker_single.exe"
-            VALUE "ProductVersion", "1, 0, 0, 1"
+            VALUE "CompanyName", "Shilyx Studio\0"
+            VALUE "FileDescription", "HostStatusChecker_single\0"
+            VALUE "FileVersion", "1, 0, 0, 1\0"
+            VALUE "InternalName", "HostStatusChecker_single.exe\0"
+            VALUE "LegalCopyright", "Shilyx Studio 2013\0"
+            VALUE "OriginalFilename", "HostStatusChecker_single.exe\0"
+            VALUE "ProductName", "HostStatusChecker_single.exe\0"
+            VALUE "ProductVersion", "1, 0, 0, 1\0"
         END
     END
     BLOCK "VarFileInfo"
@@ -82,6 +85,8 @@ BEGIN
         VALUE "Translation", 0x804, 1200
     END
 END
+
+#endif    // !_MAC
 
 
 /////////////////////////////////////////////////////////////////////////////
@@ -91,10 +96,17 @@ END
 
 // Icon with lowest ID value placed first to ensure application icon
 // remains consistent on all systems.
-IDI_MAINFRAME           ICON                    "res\\MainFrame.ico"
-IDI_GRAY                ICON                    "res\\gray.ico"
-IDI_GREEN               ICON                    "res\\green.ico"
-#endif    // 中文(简体，中国) resources
+IDI_MAINFRAME           ICON    DISCARDABLE     "res\\MainFrame.ico"
+IDI_GRAY                ICON    DISCARDABLE     "res\\gray.ico"
+IDI_GREEN               ICON    DISCARDABLE     "res\\green.ico"
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// 24
+//
+
+1                       24      DISCARDABLE     "res\\app.manifest"
+#endif    // Chinese (P.R.C.) resources
 /////////////////////////////////////////////////////////////////////////////
 
 
