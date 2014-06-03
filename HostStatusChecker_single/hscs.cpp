@@ -21,6 +21,7 @@ static enum
 static enum
 {
     MI_ABOUT = 11,
+    MI_COPY_IP,
     MI_USEINFO,
     MI_RESTART,
     MI_QUIT,
@@ -152,6 +153,62 @@ static void RunSelf()
     }
 }
 
+BOOL SetClipboardText(HWND hwnd, LPCTSTR lpText)
+{
+    if (lpText == NULL)
+    {
+        lpText = TEXT("");
+    }
+
+    BOOL bResult = FALSE;
+    int nLength = (lstrlen(lpText) + 1) * sizeof(TCHAR);
+    HGLOBAL hGlobal = GlobalAlloc(GMEM_MOVEABLE, nLength);
+
+    if (hGlobal != NULL)
+    {
+        LPTSTR lpBuffer = (LPTSTR)GlobalLock(hGlobal);
+
+        if (lpBuffer != NULL)
+        {
+            lstrcpyn(lpBuffer, lpText, nLength);
+        }
+        else
+        {
+            GlobalFree(hGlobal);
+            hGlobal = NULL;
+        }
+    }
+
+    if (hGlobal == NULL)
+    {
+        return bResult;
+    }
+
+    if (OpenClipboard(hwnd))
+    {
+        EmptyClipboard();
+#ifdef UNICODE
+        bResult = SetClipboardData(CF_UNICODETEXT, hGlobal) != NULL;
+#else
+        bResult = SetClipboardData(CF_TEXT, hGlobal) != NULL;
+#endif
+        CloseClipboard();
+    }
+
+    GlobalFree(hGlobal);
+
+    return bResult;
+}
+
+BOOL CopyIpAddressToClipboard(HWND hWnd)
+{
+    TCHAR szIpAddress[128] = TEXT("");
+
+    wnsprintf(szIpAddress, RTL_NUMBER_OF(szIpAddress), TEXT("%hs"), inet_ntoa(*(in_addr *)&g_dwAddress));
+
+    return SetClipboardText(hWnd, szIpAddress);
+}
+
 static LRESULT __stdcall NotifyWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
     static NOTIFYICONDATA nid = {sizeof(nid)};
@@ -256,6 +313,7 @@ static LRESULT __stdcall NotifyWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
 
             AppendMenu(hMenu, MF_STRING, MI_ABOUT, TEXT("关于(&A)..."));
             AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+            AppendMenu(hMenu, MF_STRING, MI_COPY_IP, TEXT("复制ip地址(&C)"));
             AppendMenu(hMenu, MF_STRING, MI_USEINFO, TEXT("启用气泡通知(&B)"));
             AppendMenu(hMenu, MF_STRING, MI_RESTART, TEXT("重新启动(&R)"));
             AppendMenu(hMenu, MF_STRING, MI_QUIT, TEXT("退出(&Q)"));
@@ -273,6 +331,13 @@ static LRESULT __stdcall NotifyWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
             {
             case MI_ABOUT:
                 MessageBox(hWnd, TEXT("HostStatusChecker_single application"), TEXT("信息"), MB_SYSTEMMODAL | MB_ICONINFORMATION);
+                break;
+
+            case MI_COPY_IP:
+                if (!CopyIpAddressToClipboard(hWnd))
+                {
+                    MessageBox(hWnd, TEXT("复制信息到剪贴板出错"), NULL, MB_SYSTEMMODAL | MB_ICONERROR);
+                }
                 break;
 
             case MI_USEINFO:
